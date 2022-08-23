@@ -16,6 +16,14 @@ from ldm.util import instantiate_from_config
 from ldm.models.diffusion.ddim import DDIMSampler
 from ldm.models.diffusion.plms import PLMSSampler
 
+def get_device():
+    if(torch.cuda.is_available()):
+        return torch.device("cuda")
+    elif(torch.backends.mps.is_available()):
+        return torch.device("mps")
+    else:
+        return torch.device("cpu")
+
 
 def chunk(it, size):
     it = iter(it)
@@ -37,7 +45,7 @@ def load_model_from_config(config, ckpt, verbose=False):
         print("unexpected keys:")
         print(u)
 
-    model.cuda()
+    model.to(get_device())
     model.eval()
     return model
 
@@ -195,7 +203,7 @@ def main():
     model = load_model_from_config(config, f"{opt.ckpt}")
     #model.embedding_manager.load(opt.embedding_path)
 
-    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    device = get_device()
     model = model.to(device)
 
     if opt.plms:
@@ -228,9 +236,17 @@ def main():
     if opt.fixed_code:
         start_code = torch.randn([opt.n_samples, opt.C, opt.H // opt.f, opt.W // opt.f], device=device)
 
-    precision_scope = autocast if opt.precision=="autocast" else nullcontext
+    sampler.make_schedule(ddim_num_steps=opt.ddim_steps, ddim_eta=opt.ddim_eta, verbose=False)
+
+    assert 0. <= opt.strength <= 1., 'can only work with strength in [0.0, 1.0]'
+    t_enc = int(opt.strength * opt.ddim_steps)
+    print(f"target t_enc is {t_enc} steps")
+
+    precision_scope = autocast if opt.precision == "autocast" else nullcontext
+    if device.type == 'mps':
+        precision_scope = nullcontext # have to use f32 on mps
     with torch.no_grad():
-        with precision_scope("cuda"):
+        with precision_scope(device.type):
             with model.ema_scope():
                 tic = time.time()
                 all_samples = list()
